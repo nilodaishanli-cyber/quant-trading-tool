@@ -1,0 +1,13 @@
+[Unit]
+Description=Quant Platform FastAPI Backend
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/quant-platform
+EnvironmentFile=/opt/quant-platform/.env
+ExecStart=/opt/quant-platform/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

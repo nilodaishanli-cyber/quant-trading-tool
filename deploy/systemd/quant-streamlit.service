@@ -1,0 +1,13 @@
+[Unit]
+Description=Personal Quant Streamlit App
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/quant-platform
+EnvironmentFile=/opt/quant-platform/.env
+ExecStart=/opt/quant-platform/.venv/bin/streamlit run frontend/streamlit_app.py --server.address 127.0.0.1 --server.port 8501 --server.headless true --browser.gatherUsageStats false
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

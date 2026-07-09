@@ -1,0 +1,13 @@
+[Unit]
+Description=Quant Platform Scheduler
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/quant-platform
+EnvironmentFile=/opt/quant-platform/.env
+ExecStart=/opt/quant-platform/.venv/bin/python -m tasks.scheduler
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
