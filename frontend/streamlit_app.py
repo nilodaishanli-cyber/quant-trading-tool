@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.services.analysis_service import analyze_realtime_stock_pool
 from data.realtime_market import is_trading_time, market_session_status, now_cn
