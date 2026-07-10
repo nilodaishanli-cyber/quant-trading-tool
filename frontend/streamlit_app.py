@@ -29,9 +29,55 @@ from data.holdings import empty_holdings
 from data.holdings import load_holdings
 from data.holdings import save_holdings
 from data.realtime_market import is_trading_time, market_session_status, now_cn
-from models.holding_strategy import build_holding_atr_risk
 from models.holding_strategy import build_holding_analysis
+from models.indicators import add_indicators
 from utils.formatting import dataframe_to_csv_bytes, parse_stock_codes
+
+try:
+    from models.holding_strategy import build_holding_atr_risk
+except ImportError:
+    def build_holding_atr_risk(
+        holdings: pd.DataFrame,
+        decisions: list[dict[str, object]],
+        histories: dict[str, pd.DataFrame],
+    ) -> pd.DataFrame:
+        decision_map = {str(item.get("股票代码", "")): item for item in decisions}
+        rows: list[dict[str, object]] = []
+        for _, holding in holdings.iterrows():
+            code = str(holding["股票代码"])
+            history = histories.get(code)
+            if history is None or history.empty:
+                continue
+            decision = decision_map.get(code, {})
+            realtime = decision.get("实时交易决策", {}) if isinstance(decision, dict) else {}
+            data = add_indicators(history).sort_values("date").tail(250).copy()
+            current_price = _safe_float(realtime.get("当前价格", decision.get("当前价格", data.iloc[-1]["close"])))
+            atr_value = _safe_float(data.iloc[-1]["atr"])
+            atr_pct = atr_value / current_price * 100 if current_price else 0.0
+            atr_history = (data["atr"] / data["close"] * 100).dropna()
+            percentile = float((atr_history <= atr_pct).mean() * 100) if not atr_history.empty else 0.0
+            cost = _safe_float(holding["成本价格"])
+            profit_pct = (current_price / cost - 1) * 100 if cost else 0.0
+            level = "低波动" if percentile < 40 else "正常" if percentile < 70 else "偏高" if percentile < 90 else "极高"
+            rows.append(
+                {
+                    "股票代码": code,
+                    "股票名称": str(holding["股票名称"] or decision.get("股票名称", "名称待获取")),
+                    "成本价": round(cost, 2),
+                    "持仓数量": int(holding["持仓数量"]),
+                    "当前价格": round(current_price, 2),
+                    "盈亏比例": f"{profit_pct:.2f}%",
+                    "ATR(14)": round(atr_value, 2),
+                    "ATR波动率": f"{atr_pct:.2f}%",
+                    "历史波动分位": f"{percentile:.1f}%",
+                    "风险等级": level,
+                    "正常波动区间": f"{max(current_price - atr_value, 0):.2f} - {current_price + atr_value:.2f}",
+                    "风险距离": f"{atr_value:.2f}",
+                    "建议止损范围": f"{max(current_price - 2 * atr_value, 0):.2f} - {max(current_price - atr_value, 0):.2f}",
+                    "风险说明": f"当前波动高于过去{percentile:.1f}%的交易日，属于{level}。",
+                }
+            )
+        return pd.DataFrame(rows)
 
 try:
     from models.auction_analysis import auction_type_probability_summary
@@ -567,6 +613,15 @@ def unique_codes(codes: list[str]) -> list[str]:
         seen.add(code)
         result.append(code)
     return result
+
+
+def _safe_float(value: object) -> float:
+    try:
+        if pd.isna(value):
+            return 0.0
+        return float(str(value).replace("%", ""))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def make_price_chart(history: pd.DataFrame, title: str, show_candlestick: bool) -> go.Figure:
