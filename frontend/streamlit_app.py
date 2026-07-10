@@ -29,9 +29,21 @@ from data.holdings import empty_holdings
 from data.holdings import load_holdings
 from data.holdings import save_holdings
 from data.realtime_market import is_trading_time, market_session_status, now_cn
-from models.auction_analysis import auction_type_probability_summary
 from models.holding_strategy import build_holding_analysis
 from utils.formatting import dataframe_to_csv_bytes, parse_stock_codes
+
+try:
+    from models.auction_analysis import auction_type_probability_summary
+except ImportError:
+    def auction_type_probability_summary(period_stats: pd.DataFrame, period: str = "近60个交易日") -> pd.DataFrame:
+        if period_stats.empty:
+            return pd.DataFrame()
+        sample = period_stats[period_stats["统计周期"] == period].copy()
+        if sample.empty:
+            sample = period_stats.copy()
+        sample = sample[sample["开盘类型"].isin(["高开", "平开", "低开"])]
+        columns = ["开盘类型", "样本数量", "成功次数", "失败次数", "上涨概率"]
+        return sample[[column for column in columns if column in sample.columns]].reset_index(drop=True)
 
 
 st.set_page_config(page_title="实时盘中量化交易分析系统", layout="wide")

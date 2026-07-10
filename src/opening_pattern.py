@@ -14,7 +14,7 @@ PATTERN_COLUMNS = [
 ]
 
 
-def analyze_opening_patterns(df: pd.DataFrame, window: int = 20, flat_threshold_pct: float = 0.15) -> dict[str, int | str]:
+def analyze_opening_patterns(df: pd.DataFrame, window: int = 20, flat_threshold_pct: float = 0.5) -> dict[str, int | str]:
     data = df.copy().sort_values("date").tail(window + 1)
     if len(data) < 2:
         return {
@@ -50,7 +50,7 @@ def analyze_opening_patterns(df: pd.DataFrame, window: int = 20, flat_threshold_
     return {"gap_type": latest_gap, **counts}
 
 
-def classify_gap(gap_pct: float, flat_threshold_pct: float = 0.15) -> str:
+def classify_gap(gap_pct: float, flat_threshold_pct: float = 0.5) -> str:
     if gap_pct > flat_threshold_pct:
         return "高开"
     if gap_pct < -flat_threshold_pct:
