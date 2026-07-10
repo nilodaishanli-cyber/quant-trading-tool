@@ -29,6 +29,7 @@ from data.holdings import empty_holdings
 from data.holdings import load_holdings
 from data.holdings import save_holdings
 from data.realtime_market import is_trading_time, market_session_status, now_cn
+from models.holding_strategy import build_holding_atr_risk
 from models.holding_strategy import build_holding_analysis
 from utils.formatting import dataframe_to_csv_bytes, parse_stock_codes
 
@@ -153,7 +154,7 @@ def main() -> None:
         return
 
     decisions_df = pd.DataFrame(decisions).sort_values(["风险评分", "综合评分"], ascending=[True, False])
-    render_holding_analysis(holdings, decisions)
+    render_holding_analysis(holdings, decisions, histories)
     selected_code = render_home(decisions_df, histories, market, show_candlestick)
     render_market(market)
     render_ranking(decisions_df)
@@ -256,7 +257,11 @@ def render_holding_manager() -> pd.DataFrame:
     return load_holdings()
 
 
-def render_holding_analysis(holdings: pd.DataFrame, decisions: list[dict[str, object]]) -> None:
+def render_holding_analysis(
+    holdings: pd.DataFrame,
+    decisions: list[dict[str, object]],
+    histories: dict[str, pd.DataFrame],
+) -> None:
     if holdings.empty:
         return
     table = build_holding_analysis(holdings, decisions)
@@ -271,6 +276,20 @@ def render_holding_analysis(holdings: pd.DataFrame, decisions: list[dict[str, ob
     total_profit_pct = table["盈亏金额"].sum() / total_cost * 100 if total_cost else 0.0
     totals[3].metric("总盈亏比例", f"{total_profit_pct:.2f}%")
     st.dataframe(table, width="stretch", hide_index=True)
+    render_holding_atr_risk(holdings, decisions, histories)
+
+
+def render_holding_atr_risk(
+    holdings: pd.DataFrame,
+    decisions: list[dict[str, object]],
+    histories: dict[str, pd.DataFrame],
+) -> None:
+    risk_table = build_holding_atr_risk(holdings, decisions, histories)
+    if risk_table.empty:
+        return
+    st.subheader("持仓风险管理")
+    st.markdown("**波动风险分析**")
+    st.dataframe(risk_table, width="stretch", hide_index=True)
 
 
 def render_ma_strategy_summary(decision: pd.Series) -> None:
