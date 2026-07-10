@@ -42,6 +42,8 @@ def _similar_gap_stats(data: pd.DataFrame, gap_type: str) -> dict[str, object]:
     counts = {
         "高开高走次数": 0,
         "高开低走次数": 0,
+        "平开上涨次数": 0,
+        "平开下跌次数": 0,
         "低开高走次数": 0,
         "低开低走次数": 0,
     }
@@ -57,12 +59,17 @@ def _similar_gap_stats(data: pd.DataFrame, gap_type: str) -> dict[str, object]:
         is_up = today_close >= today_open
         if current_gap == "高开":
             counts["高开高走次数" if is_up else "高开低走次数"] += 1
+        elif current_gap == "平开":
+            counts["平开上涨次数" if is_up else "平开下跌次数"] += 1
         elif current_gap == "低开":
             counts["低开高走次数" if is_up else "低开低走次数"] += 1
 
     if gap_type == "高开":
         good = counts["高开高走次数"]
         bad = counts["高开低走次数"]
+    elif gap_type == "平开":
+        good = counts["平开上涨次数"]
+        bad = counts["平开下跌次数"]
     elif gap_type == "低开":
         good = counts["低开高走次数"]
         bad = counts["低开低走次数"]
@@ -80,25 +87,40 @@ def _similar_gap_stats(data: pd.DataFrame, gap_type: str) -> dict[str, object]:
 
 
 def _gap_period_stats(data: pd.DataFrame, gap_type: str) -> pd.DataFrame:
+    del gap_type
     rows: list[dict[str, object]] = []
     for period in [20, 60, 250]:
-        stats = _similar_gap_stats(data.tail(period + 1), gap_type)
-        success = int(stats["历史相似次数"]) - int(stats["反向次数"])
-        rows.append(
-            {
-                "统计周期": f"近{period}个交易日",
-                "开盘类型": gap_type,
-                "样本数量": stats["历史相似次数"],
-                "成功次数": success,
-                "失败次数": stats["反向次数"],
-                "顺势概率": f"{float(stats['顺势概率']):.1f}%",
-                "高开高走次数": stats["高开高走次数"],
-                "高开低走次数": stats["高开低走次数"],
-                "低开高走次数": stats["低开高走次数"],
-                "低开低走次数": stats["低开低走次数"],
-            }
-        )
+        sample = data.tail(period + 1)
+        for current_gap in ["高开", "平开", "低开"]:
+            stats = _similar_gap_stats(sample, current_gap)
+            success = int(stats["历史相似次数"]) - int(stats["反向次数"])
+            rows.append(
+                {
+                    "统计周期": f"近{period}个交易日",
+                    "开盘类型": current_gap,
+                    "样本数量": stats["历史相似次数"],
+                    "成功次数": success,
+                    "失败次数": stats["反向次数"],
+                    "上涨概率": f"{float(stats['顺势概率']):.1f}%",
+                    "高开高走次数": stats["高开高走次数"],
+                    "高开低走次数": stats["高开低走次数"],
+                    "平开上涨次数": stats["平开上涨次数"],
+                    "平开下跌次数": stats["平开下跌次数"],
+                    "低开高走次数": stats["低开高走次数"],
+                    "低开低走次数": stats["低开低走次数"],
+                }
+            )
     return pd.DataFrame(rows)
+
+
+def auction_type_probability_summary(period_stats: pd.DataFrame, period: str = "近60个交易日") -> pd.DataFrame:
+    if period_stats.empty:
+        return pd.DataFrame()
+    sample = period_stats[period_stats["统计周期"] == period].copy()
+    if sample.empty:
+        sample = period_stats.copy()
+    sample = sample[sample["开盘类型"].isin(["高开", "平开", "低开"])]
+    return sample[["开盘类型", "样本数量", "成功次数", "失败次数", "上涨概率"]].reset_index(drop=True)
 
 
 def _expected_move(gap_type: str, stats: dict[str, object]) -> str:
@@ -124,6 +146,8 @@ def _empty() -> dict[str, object]:
         "今日可能走势": "数据不足",
         "高开高走次数": 0,
         "高开低走次数": 0,
+        "平开上涨次数": 0,
+        "平开下跌次数": 0,
         "低开高走次数": 0,
         "低开低走次数": 0,
         "历史相似次数": 0,

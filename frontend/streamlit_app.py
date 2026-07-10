@@ -29,6 +29,7 @@ from data.holdings import empty_holdings
 from data.holdings import load_holdings
 from data.holdings import save_holdings
 from data.realtime_market import is_trading_time, market_session_status, now_cn
+from models.auction_analysis import auction_type_probability_summary
 from models.holding_strategy import build_holding_analysis
 from utils.formatting import dataframe_to_csv_bytes, parse_stock_codes
 
@@ -371,6 +372,8 @@ def render_stock_detail(
     st.caption(str(auction["数据说明"]))
     period_stats = auction.get("历史分周期统计")
     if isinstance(period_stats, pd.DataFrame) and not period_stats.empty:
+        st.markdown("**开盘类型上涨概率**")
+        st.dataframe(auction_type_probability_summary(period_stats), width="stretch", hide_index=True)
         st.markdown("**集合竞价历史分周期概率**")
         st.dataframe(period_stats, width="stretch", hide_index=True)
 
