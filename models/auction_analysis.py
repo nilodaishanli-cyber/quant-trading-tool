@@ -22,7 +22,7 @@ def analyze_auction(df: pd.DataFrame, window: int = 60) -> dict[str, object]:
     auction_ratio = auction_volume / (volume_avg * 0.08) if volume_avg else 1.0
 
     similar = _similar_gap_stats(data.tail(window + 1), gap_type)
-    period_stats = _gap_period_stats(data, gap_type)
+    period_stats = _gap_period_stats(data)
     return {
         "昨日收盘价": round(previous_close, 2),
         "今日竞价价格": round(auction_price, 2),
@@ -86,8 +86,7 @@ def _similar_gap_stats(data: pd.DataFrame, gap_type: str) -> dict[str, object]:
     }
 
 
-def _gap_period_stats(data: pd.DataFrame, gap_type: str) -> pd.DataFrame:
-    del gap_type
+def _gap_period_stats(data: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     for period in [20, 60, 250]:
         sample = data.tail(period + 1)
@@ -121,6 +120,13 @@ def auction_type_probability_summary(period_stats: pd.DataFrame, period: str = "
         sample = period_stats.copy()
     sample = sample[sample["开盘类型"].isin(["高开", "平开", "低开"])]
     return sample[["开盘类型", "样本数量", "成功次数", "失败次数", "上涨概率"]].reset_index(drop=True)
+
+
+def has_all_opening_type_stats(period_stats: pd.DataFrame, period: str = "近60个交易日") -> bool:
+    if period_stats.empty:
+        return False
+    sample = period_stats[period_stats["统计周期"] == period]
+    return {"高开", "平开", "低开"}.issubset(set(sample["开盘类型"]))
 
 
 def _expected_move(gap_type: str, stats: dict[str, object]) -> str:
