@@ -14,5 +14,6 @@ work/
 data/*.db
 data/*.sqlite
 data/*.sqlite3
+data/personal_holdings.csv
 
 .streamlit/secrets.toml

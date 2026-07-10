@@ -24,7 +24,12 @@ from backend.services.analysis_service import get_market_context
 from backend.services.analysis_service import get_realtime_market_context
 from backend.services.analysis_service import get_realtime_quotes
 from backend.services.analysis_service import merge_realtime_analysis
+from data.holdings import HOLDING_COLUMNS
+from data.holdings import empty_holdings
+from data.holdings import load_holdings
+from data.holdings import save_holdings
 from data.realtime_market import is_trading_time, market_session_status, now_cn
+from models.holding_strategy import build_holding_analysis
 from utils.formatting import dataframe_to_csv_bytes, parse_stock_codes
 
 
@@ -93,6 +98,7 @@ def main() -> None:
         height=110,
         help="支持换行、逗号、空格分隔，例如 002463, 600519, 000001。",
     )
+    holdings = render_holding_manager()
     status_cols = st.columns(3)
     status_cols[0].metric("当前时间", now_cn().strftime("%H:%M:%S"))
     status_cols[1].metric("交易状态", market_session_status())
@@ -100,14 +106,16 @@ def main() -> None:
     st.caption("提示：首次分析新股票会获取约260个交易日数据；交易时间内实时行情按设置自动刷新。")
     run_button = st.button("开始实时分析", type="primary", width="stretch")
 
-    codes = parse_stock_codes(raw_codes)
+    input_codes = parse_stock_codes(raw_codes)
+    holding_codes = holdings["股票代码"].tolist() if not holdings.empty else []
+    codes = unique_codes(input_codes + holding_codes)
     if not codes:
-        st.info("请先输入至少一个6位A股股票代码。")
+        st.info("请先输入至少一个6位A股股票代码，或在“我的持仓”中保存持仓。")
         return
 
     if run_button:
         st.query_params["run"] = "1"
-        st.query_params["codes"] = ",".join(codes)
+        st.query_params["codes"] = ",".join(input_codes or holding_codes)
 
     should_run = run_button or st.query_params.get("run") == "1"
     if not should_run:
@@ -132,6 +140,7 @@ def main() -> None:
         return
 
     decisions_df = pd.DataFrame(decisions).sort_values(["风险评分", "综合评分"], ascending=[True, False])
+    render_holding_analysis(holdings, decisions)
     selected_code = render_home(decisions_df, histories, market, show_candlestick)
     render_market(market)
     render_ranking(decisions_df)
@@ -198,6 +207,57 @@ def render_home(
         key=f"首页价格走势_{selected_code}",
     )
     return selected_code
+
+
+def render_holding_manager() -> pd.DataFrame:
+    st.subheader("我的持仓")
+    if "holdings_editor" not in st.session_state:
+        loaded = load_holdings()
+        st.session_state["holdings_editor"] = loaded if not loaded.empty else empty_holdings()
+
+    with st.expander("管理个人持仓", expanded=False):
+        st.caption("每只股票独立保存股票代码、股票名称、成本价格和持仓数量。保存后会自动纳入实时分析。")
+        edited = st.data_editor(
+            st.session_state["holdings_editor"],
+            num_rows="dynamic",
+            width="stretch",
+            hide_index=True,
+            column_order=HOLDING_COLUMNS,
+            column_config={
+                "股票代码": st.column_config.TextColumn("股票代码", help="6位A股代码，例如 603986"),
+                "股票名称": st.column_config.TextColumn("股票名称"),
+                "成本价格": st.column_config.NumberColumn("成本价格", min_value=0.0, step=0.01, format="%.2f"),
+                "持仓数量": st.column_config.NumberColumn("持仓数量", min_value=0, step=100),
+            },
+            key="holdings_editor_table",
+        )
+        cols = st.columns([1, 1, 4])
+        if cols[0].button("保存持仓", type="primary"):
+            saved = save_holdings(edited)
+            st.session_state["holdings_editor"] = saved
+            st.success("持仓已保存。")
+            st.rerun()
+        if cols[1].button("重新读取"):
+            st.session_state["holdings_editor"] = load_holdings()
+            st.rerun()
+    return load_holdings()
+
+
+def render_holding_analysis(holdings: pd.DataFrame, decisions: list[dict[str, object]]) -> None:
+    if holdings.empty:
+        return
+    table = build_holding_analysis(holdings, decisions)
+    if table.empty:
+        return
+    st.subheader("我的持仓实时盈亏")
+    totals = st.columns(4)
+    totals[0].metric("持仓股票数", len(table))
+    totals[1].metric("持仓市值", f"{table['持仓市值'].sum():.2f}")
+    totals[2].metric("盈亏金额", f"{table['盈亏金额'].sum():.2f}")
+    total_cost = (table["成本价格"] * table["持仓数量"]).sum()
+    total_profit_pct = table["盈亏金额"].sum() / total_cost * 100 if total_cost else 0.0
+    totals[3].metric("总盈亏比例", f"{total_profit_pct:.2f}%")
+    st.dataframe(table, width="stretch", hide_index=True)
 
 
 def render_ma_strategy_summary(decision: pd.Series) -> None:
@@ -462,6 +522,17 @@ def setup_auto_refresh(seconds: int) -> None:
         st.caption("自动刷新组件未安装，部署环境安装 requirements.txt 后会启用轻量刷新。")
         return
     st_autorefresh(interval=int(seconds) * 1000, key="trading_auto_refresh")
+
+
+def unique_codes(codes: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for code in codes:
+        if code in seen:
+            continue
+        seen.add(code)
+        result.append(code)
+    return result
 
 
 def make_price_chart(history: pd.DataFrame, title: str, show_candlestick: bool) -> go.Figure:
