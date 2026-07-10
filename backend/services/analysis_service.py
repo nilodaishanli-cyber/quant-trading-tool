@@ -94,6 +94,70 @@ def analyze_realtime_stock_pool(codes: list[str]) -> AnalysisResult:
     return AnalysisResult(decisions=decisions, histories=histories, market=market, errors=errors)
 
 
+def analyze_historical_stock_pool(codes: list[str], market_score: float) -> AnalysisResult:
+    decisions: list[dict[str, Any]] = []
+    histories: dict[str, pd.DataFrame] = {}
+    errors: list[dict[str, str]] = []
+    for code in codes:
+        decision, history, error = analyze_single_stock(code, market_score)
+        if error:
+            errors.append(error)
+            continue
+        histories[code] = history
+        decisions.append(decision)
+    decisions = sorted(decisions, key=lambda item: (float(item["风险评分"]), -float(item["综合评分"])))
+    return AnalysisResult(decisions=decisions, histories=histories, market={}, errors=errors)
+
+
+def get_realtime_quotes(codes: list[str]):
+    return get_data_source().realtime_quotes(codes)
+
+
+def get_intraday_minutes(code: str) -> pd.DataFrame:
+    return get_data_source().intraday_minutes(code)
+
+
+def merge_realtime_analysis(
+    base_decisions: list[dict[str, Any]],
+    histories: dict[str, pd.DataFrame],
+    market: dict[str, Any],
+    quotes: pd.DataFrame,
+    minutes_by_code: dict[str, pd.DataFrame],
+    quote_error: str | None = None,
+) -> AnalysisResult:
+    quote_map = _quotes_by_code(quotes)
+    decisions: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for base in base_decisions:
+        code = str(base["股票代码"])
+        history = histories.get(code)
+        if history is None or history.empty:
+            errors.append({"股票代码": code, "错误原因": "历史数据缺失，无法生成实时决策。"})
+            continue
+        try:
+            decision = dict(base)
+            realtime_decision = build_realtime_decision(
+                decision,
+                history,
+                quote_map.get(code),
+                minutes_by_code.get(code, pd.DataFrame()),
+                market,
+            )
+            decision["实时交易决策"] = realtime_decision
+            decision["分时分钟数据"] = minutes_by_code.get(code, pd.DataFrame())
+            decisions.append(decision)
+        except Exception as exc:  # noqa: BLE001 - isolate one stock failure.
+            errors.append({"股票代码": code, "错误原因": f"实时分析失败: {str(exc)[:180]}"})
+
+    if quote_error:
+        errors.append({"股票代码": "实时行情", "错误原因": quote_error})
+
+    merged_market = dict(market)
+    merged_market["交易状态"] = market_session_status()
+    decisions = sorted(decisions, key=lambda item: (float(item["风险评分"]), -float(item["综合评分"])))
+    return AnalysisResult(decisions=decisions, histories=histories, market=merged_market, errors=errors)
+
+
 def get_market_context() -> dict[str, Any]:
     return fetch_market_environment(days=45)
 

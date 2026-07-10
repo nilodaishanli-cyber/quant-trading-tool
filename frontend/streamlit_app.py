@@ -2,18 +2,28 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import time
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
+
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:  # pragma: no cover - local fallback before dependencies are installed.
+    st_autorefresh = None
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.services.analysis_service import analyze_realtime_stock_pool
+from backend.services.analysis_service import analyze_historical_stock_pool
+from backend.services.analysis_service import get_intraday_minutes
+from backend.services.analysis_service import get_market_context
+from backend.services.analysis_service import get_realtime_market_context
+from backend.services.analysis_service import get_realtime_quotes
+from backend.services.analysis_service import merge_realtime_analysis
 from data.realtime_market import is_trading_time, market_session_status, now_cn
 from utils.formatting import dataframe_to_csv_bytes, parse_stock_codes
 
@@ -70,7 +80,8 @@ def main() -> None:
         st.header("系统设置")
         show_candlestick = st.toggle("显示K线图", value=True)
         auto_refresh = st.toggle("交易时间自动刷新", value=True)
-        refresh_interval = st.slider("刷新频率（秒）", min_value=5, max_value=30, value=15, step=5)
+        refresh_interval = 30
+        st.metric("刷新频率", "30秒")
         st.caption("免费行情为轮询近实时数据，后续可在数据源层替换Level-2。")
 
     query_codes = str(st.query_params.get("codes", ""))
@@ -105,10 +116,11 @@ def main() -> None:
         return
 
     if auto_refresh and is_trading_time():
-        inject_auto_refresh(refresh_interval)
+        setup_auto_refresh(refresh_interval)
 
-    with st.spinner("正在获取实时行情、市场环境、当日分钟线和历史概率..."):
-        result = cached_analyze_realtime_stock_pool(tuple(codes), refresh_interval, cache_version="rt-v1")
+    refresh_bucket = int(time.time() // refresh_interval)
+    with st.spinner("正在加载历史模型与实时行情..."):
+        result = build_realtime_result(codes, refresh_bucket)
     decisions, histories, errors, market = result.decisions, result.histories, result.errors, result.market
 
     if errors:
@@ -249,6 +261,8 @@ def render_market(market: dict[str, object]) -> None:
     col1.metric("市场环境评分", f"{market['score']}分")
     col2.metric("市场状态", str(market["status"]))
     col3.metric("交易状态", str(market.get("交易状态", market_session_status())))
+    if market.get("最后更新时间"):
+        st.caption(f"最后更新时间：{market['最后更新时间']}")
     indexes = market.get("indexes")
     if isinstance(indexes, pd.DataFrame) and not indexes.empty:
         st.dataframe(indexes, width="stretch", hide_index=True)
@@ -358,23 +372,96 @@ def render_stock_detail(
         )
 
 
-@st.cache_data(ttl=5, show_spinner=False)
-def cached_analyze_realtime_stock_pool(codes: tuple[str, ...], refresh_interval: int, cache_version: str):
-    del refresh_interval, cache_version
-    return analyze_realtime_stock_pool(list(codes))
-
-
-def inject_auto_refresh(seconds: int) -> None:
-    components.html(
-        f"""
-        <script>
-        setTimeout(function() {{
-            window.parent.location.reload();
-        }}, {int(seconds) * 1000});
-        </script>
-        """,
-        height=0,
+def build_realtime_result(codes: list[str], refresh_bucket: int):
+    historical_market = cached_historical_market_context(cache_version="hist-v1")
+    realtime_market = realtime_market_with_fallback(refresh_bucket)
+    realtime_indexes = realtime_market.get("indexes")
+    market = realtime_market if isinstance(realtime_indexes, pd.DataFrame) and not realtime_indexes.empty else historical_market
+    market_score = float(historical_market["score"])
+    base = cached_historical_stock_pool(tuple(codes), market_score, cache_version="hist-v1")
+    quotes, quote_error = realtime_quotes_with_fallback(tuple(codes), refresh_bucket)
+    minutes_by_code = {
+        code: cached_intraday_minutes(code, refresh_bucket, cache_version="minute-v1")
+        for code in codes
+    }
+    result = merge_realtime_analysis(
+        base.decisions,
+        base.histories,
+        market,
+        quotes,
+        minutes_by_code,
+        quote_error=quote_error,
     )
+    result.errors[:0] = base.errors
+    return result
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def cached_historical_market_context(cache_version: str) -> dict[str, object]:
+    del cache_version
+    market = get_market_context()
+    market["最后更新时间"] = now_cn().strftime("%Y-%m-%d %H:%M:%S")
+    return market
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def cached_historical_stock_pool(codes: tuple[str, ...], market_score: float, cache_version: str):
+    del cache_version
+    return analyze_historical_stock_pool(list(codes), market_score)
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def cached_realtime_market_context(refresh_bucket: int, cache_version: str) -> dict[str, object]:
+    del refresh_bucket, cache_version
+    market = get_realtime_market_context()
+    market["最后更新时间"] = now_cn().strftime("%Y-%m-%d %H:%M:%S")
+    return market
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def cached_realtime_quotes(codes: tuple[str, ...], refresh_bucket: int, cache_version: str):
+    del refresh_bucket, cache_version
+    return get_realtime_quotes(list(codes))
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def cached_intraday_minutes(code: str, refresh_bucket: int, cache_version: str) -> pd.DataFrame:
+    del refresh_bucket, cache_version
+    return get_intraday_minutes(code)
+
+
+def realtime_market_with_fallback(refresh_bucket: int) -> dict[str, object]:
+    market = cached_realtime_market_context(refresh_bucket, cache_version="rt-market-v1")
+    indexes = market.get("indexes")
+    if not market.get("errors") and isinstance(indexes, pd.DataFrame) and not indexes.empty:
+        st.session_state["last_realtime_market"] = market
+        return market
+    previous = st.session_state.get("last_realtime_market")
+    if previous:
+        fallback = dict(previous)
+        fallback["errors"] = list(market.get("errors", [])) + ["实时市场接口异常，已保留上一份成功市场数据。"]
+        return fallback
+    return market
+
+
+def realtime_quotes_with_fallback(codes: tuple[str, ...], refresh_bucket: int) -> tuple[pd.DataFrame, str | None]:
+    result = cached_realtime_quotes(codes, refresh_bucket, cache_version="rt-quotes-v1")
+    if result.error is None and not result.data.empty:
+        st.session_state["last_realtime_quotes"] = result.data
+        st.session_state["last_realtime_quote_time"] = now_cn().strftime("%Y-%m-%d %H:%M:%S")
+        return result.data, None
+    previous = st.session_state.get("last_realtime_quotes")
+    if isinstance(previous, pd.DataFrame) and not previous.empty:
+        message = f"{result.error or '实时行情接口异常'}；已保留上一份成功行情，最后成功时间：{st.session_state.get('last_realtime_quote_time', '未知')}"
+        return previous, message
+    return result.data, result.error
+
+
+def setup_auto_refresh(seconds: int) -> None:
+    if st_autorefresh is None:
+        st.caption("自动刷新组件未安装，部署环境安装 requirements.txt 后会启用轻量刷新。")
+        return
+    st_autorefresh(interval=int(seconds) * 1000, key="trading_auto_refresh")
 
 
 def make_price_chart(history: pd.DataFrame, title: str, show_candlestick: bool) -> go.Figure:
