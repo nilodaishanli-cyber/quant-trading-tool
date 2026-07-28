@@ -140,7 +140,7 @@ DETAIL_COLUMNS = {
 
 
 def main() -> None:
-    st.title("实时盘中量化交易分析系统")
+    st.title("【TEST-20260728】实时盘中量化交易分析系统")
     st.caption(f"当前版本：{APP_VERSION}")
     st.caption("集合竞价 -> 开盘 -> 实时分时 -> 黄线突破概率 -> 10:50多空判断 -> 买入区域 -> 风险控制。")
 
