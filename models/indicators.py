@@ -6,6 +6,9 @@ import pandas as pd
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     data = df.copy()
+    if "volume" not in data.columns:
+        data["volume"] = 0
+    data["volume"] = pd.to_numeric(data["volume"], errors="coerce").fillna(0)
     for window in [5, 10, 20, 30]:
         data[f"ma{window}"] = data["close"].rolling(window=window, min_periods=1).mean()
 

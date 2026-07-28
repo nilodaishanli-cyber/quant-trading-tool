@@ -14,7 +14,12 @@ def build_buy_strategy(df: pd.DataFrame) -> dict[str, object]:
     atr = float(latest["atr"])
     support = float(latest["low_20"])
     high_20 = float(latest["high_20"])
-    volume_area = float(data.tail(20).assign(vp=data["close"] * data["volume"]).eval("vp").sum() / data.tail(20)["volume"].sum())
+    recent = data.tail(20)
+    volume_sum = float(recent["volume"].sum())
+    if volume_sum > 0:
+        volume_area = float((recent["close"] * recent["volume"]).sum() / volume_sum)
+    else:
+        volume_area = float(recent["close"].mean())
 
     conservative_low = max(min(support, ma30 - 0.5 * atr), 0)
     conservative_high = max(min(ma30, ma20 - 0.3 * atr), conservative_low)

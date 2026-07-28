@@ -141,8 +141,7 @@ DETAIL_COLUMNS = {
 
 
 def main() -> None:
-    st.title("【TEST-20260728】实时盘中量化交易分析系统")
-    st.caption(f"当前版本：{APP_VERSION}")
+    st.title("实时盘中量化交易分析系统")
     st.caption("集合竞价 -> 开盘 -> 实时分时 -> 黄线突破概率 -> 10:50多空判断 -> 买入区域 -> 风险控制。")
 
     with st.sidebar:
@@ -150,7 +149,9 @@ def main() -> None:
         show_candlestick = st.toggle("显示K线图", value=True)
         auto_refresh = st.toggle("交易时间自动刷新", value=True)
         refresh_interval = 30
-        st.metric("刷新频率", "30秒")
+        trading_now = is_trading_time()
+        effective_auto_refresh = auto_refresh and trading_now
+        st.metric("刷新频率", "30秒" if effective_auto_refresh else "手动")
         st.caption("免费行情为轮询近实时数据，后续可在数据源层替换Level-2。")
 
     query_codes = str(st.query_params.get("codes", ""))
@@ -166,7 +167,9 @@ def main() -> None:
     status_cols = st.columns(3)
     status_cols[0].metric("当前时间", now_cn().strftime("%H:%M:%S"))
     status_cols[1].metric("交易状态", market_session_status())
-    status_cols[2].metric("刷新频率", f"{refresh_interval}秒" if auto_refresh else "手动")
+    status_cols[2].metric("刷新频率", f"{refresh_interval}秒" if effective_auto_refresh else "手动")
+    if not trading_now:
+        st.info("市场已关闭，当前展示最近交易日数据。")
     st.caption("提示：首次分析新股票会获取约260个交易日数据；交易时间内实时行情按设置自动刷新。")
     run_button = st.button("开始实时分析", type="primary", width="stretch")
 
@@ -188,21 +191,20 @@ def main() -> None:
         st.dataframe(pd.DataFrame({"股票代码": codes}), width="stretch", hide_index=True)
         return
 
-    if auto_refresh and is_trading_time():
+    if effective_auto_refresh:
         setup_auto_refresh(refresh_interval)
 
     refresh_bucket = int(time.time() // refresh_interval)
     with st.spinner("正在加载历史模型与实时行情..."):
-        result = build_realtime_result(codes, refresh_bucket)
+        result = build_realtime_result(codes, refresh_bucket, use_realtime=trading_now)
     decisions, histories, errors, market = result.decisions, result.histories, result.errors, result.market
-    render_diagnostics(market, errors)
 
     if errors:
-        st.warning("部分股票数据获取失败。免费行情接口偶尔会断开，系统已自动尝试备用源。")
-        st.dataframe(pd.DataFrame(errors), width="stretch", hide_index=True)
+        st.warning("部分实时数据暂时不可用，当前展示最近可用数据。")
 
     if not decisions:
-        st.error("没有可展示的数据。请稍后重试，或减少股票数量后再次分析。")
+        st.warning("行情接口暂时不可用，当前展示基础持仓信息。")
+        render_basic_holdings(holdings, codes)
         return
 
     decisions_df = pd.DataFrame(decisions).sort_values(["风险评分", "综合评分"], ascending=[True, False])
@@ -307,6 +309,28 @@ def render_holding_manager() -> pd.DataFrame:
             st.session_state["holdings_editor"] = load_holdings()
             st.rerun()
     return load_holdings()
+
+
+def render_basic_holdings(holdings: pd.DataFrame, codes: list[str]) -> None:
+    st.subheader("基础持仓信息")
+    holding_map = {}
+    if holdings is not None and not holdings.empty:
+        holding_map = {str(row["股票代码"]): row for _, row in holdings.iterrows()}
+    rows: list[dict[str, object]] = []
+    for code in codes:
+        holding = holding_map.get(code)
+        rows.append(
+            {
+                "股票代码": code,
+                "股票名称": str(holding["股票名称"]) if holding is not None else "名称待获取",
+                "持仓成本": float(holding["成本价格"]) if holding is not None else "--",
+                "持仓数量": int(holding["持仓数量"]) if holding is not None else "--",
+                "当前价格": "--",
+                "涨跌幅": "--",
+                "数据状态": "行情接口暂时不可用",
+            }
+        )
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def render_holding_analysis(
@@ -518,32 +542,29 @@ def render_stock_detail(
         )
 
 
-def build_realtime_result(codes: list[str], refresh_bucket: int):
-    diagnostic = {
-        "APP_VERSION": APP_VERSION,
-        "本次页面执行时间": now_cn().strftime("%Y-%m-%d %H:%M:%S"),
-        "历史股票池缓存状态": "成功结果可缓存，失败结果不缓存",
-    }
+def build_realtime_result(codes: list[str], refresh_bucket: int, use_realtime: bool = True):
     historical_market = cached_historical_market_context(cache_version=APP_VERSION)
-    realtime_market = realtime_market_with_fallback(refresh_bucket)
-    realtime_indexes = realtime_market.get("indexes")
-    market = realtime_market if isinstance(realtime_indexes, pd.DataFrame) and not realtime_indexes.empty else historical_market
+    if use_realtime:
+        realtime_market = realtime_market_with_fallback(refresh_bucket)
+        realtime_indexes = realtime_market.get("indexes")
+        market = realtime_market if isinstance(realtime_indexes, pd.DataFrame) and not realtime_indexes.empty else historical_market
+    else:
+        market = dict(historical_market)
+        market["交易状态"] = "市场已关闭，当前展示最近交易日数据"
     market_score = float(historical_market["score"])
     try:
         base = cached_historical_stock_pool(tuple(codes), market_score, cache_version=APP_VERSION)
-        diagnostic["历史股票池结果来源"] = "st.cache_data 成功结果"
-        if isinstance(base.market, dict):
-            diagnostic["历史股票池缓存生成时间"] = base.market.get("缓存生成时间", "未知")
-            diagnostic["历史股票池缓存版本"] = base.market.get("缓存版本", "未知")
     except HistoricalStockPoolFetchError as exc:
         base = analyze_historical_stock_pool(list(codes), market_score)
-        diagnostic["历史股票池结果来源"] = "实时重新执行，失败结果未写入缓存"
-        diagnostic["历史股票池缓存异常"] = str(exc)
-    quotes, quote_error = realtime_quotes_with_fallback(tuple(codes), refresh_bucket)
-    minutes_by_code = {
-        code: cached_intraday_minutes(code, refresh_bucket, cache_version=APP_VERSION)
-        for code in codes
-    }
+    if use_realtime:
+        quotes, quote_error = realtime_quotes_with_fallback(tuple(codes), refresh_bucket)
+        minutes_by_code = {
+            code: cached_intraday_minutes(code, refresh_bucket, cache_version=APP_VERSION)
+            for code in codes
+        }
+    else:
+        quotes, quote_error = pd.DataFrame(), None
+        minutes_by_code = {}
     result = merge_realtime_analysis(
         base.decisions,
         base.histories,
@@ -553,11 +574,9 @@ def build_realtime_result(codes: list[str], refresh_bucket: int):
         quote_error=quote_error,
     )
     result.errors[:0] = base.errors
-    result.market = dict(result.market)
-    result.market["诊断信息"] = diagnostic | {
-        "本次错误数量": len(result.errors),
-        "本次错误对象": result.errors,
-    }
+    if not use_realtime:
+        result.market = dict(result.market)
+        result.market["交易状态"] = "市场已关闭，当前展示最近交易日数据"
     return result
 
 
@@ -644,20 +663,6 @@ class HistoricalStockPoolFetchError(RuntimeError):
 def clear_analysis_state() -> None:
     for key in STALE_ANALYSIS_STATE_KEYS:
         st.session_state.pop(key, None)
-
-
-def render_diagnostics(market: dict[str, object], errors: list[dict[str, str]]) -> None:
-    diagnostic = market.get("诊断信息", {}) if isinstance(market, dict) else {}
-    if not isinstance(diagnostic, dict):
-        diagnostic = {}
-    diagnostic_rows = {
-        "当前APP_VERSION": APP_VERSION,
-        "页面显示时间": now_cn().strftime("%Y-%m-%d %H:%M:%S"),
-        "错误数量": len(errors),
-        **diagnostic,
-    }
-    with st.expander("临时诊断信息", expanded=bool(errors)):
-        st.json(diagnostic_rows, expanded=False)
 
 
 def unique_codes(codes: list[str]) -> list[str]:

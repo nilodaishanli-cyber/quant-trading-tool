@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 import logging
+from pathlib import Path
 import time
 from typing import Literal
 
@@ -11,6 +12,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 ProviderName = Literal["akshare"]
+CACHE_DIR = Path(__file__).resolve().parents[1] / "data" / "history_cache"
 
 
 @dataclass
@@ -51,9 +53,11 @@ def fetch_stock_history(code: str, days: int = 30, provider: ProviderName = "aks
     try:
         raw = _fetch_with_retry(lambda: _fetch_akshare_history_em(code, days=days), retries=2)
         _log_raw_history("Eastmoney", code, raw)
-        data = normalize_history_frame(raw).tail(days).reset_index(drop=True)
+        data = normalize_history_frame(raw)
         if data.empty:
             raise ValueError("东方财富接口未返回行情数据")
+        data = data.tail(days).reset_index(drop=True)
+        _save_history_cache(code, data)
         return StockFetchResult(code=code, data=data, source="akshare/eastmoney")
     except Exception as exc:  # noqa: BLE001 - surface provider errors to the UI.
         errors.append(f"东方财富接口失败: {_short_error(exc)}")
@@ -61,13 +65,19 @@ def fetch_stock_history(code: str, days: int = 30, provider: ProviderName = "aks
     try:
         raw = _fetch_with_retry(lambda: _fetch_akshare_history_tx(code, days=days), retries=2)
         _log_raw_history("Tencent", code, raw)
-        data = normalize_history_frame(raw).tail(days).reset_index(drop=True)
+        data = normalize_history_frame(raw)
         if data.empty:
             raise ValueError("腾讯接口未返回行情数据")
+        data = data.tail(days).reset_index(drop=True)
+        _save_history_cache(code, data)
         return StockFetchResult(code=code, data=data, source="akshare/tencent")
     except Exception as exc:  # noqa: BLE001 - surface provider errors to the UI.
         errors.append(f"腾讯备用接口失败: {_short_error(exc)}")
-        return StockFetchResult(code=code, data=pd.DataFrame(), error="；".join(errors))
+
+    cached = _load_history_cache(code, days)
+    if not cached.empty:
+        return StockFetchResult(code=code, data=cached, source="本地最近成功缓存")
+    return StockFetchResult(code=code, data=pd.DataFrame(), error="；".join(errors))
 
 
 def _fetch_akshare_history_em(code: str, days: int) -> pd.DataFrame:
@@ -147,6 +157,7 @@ def normalize_history_frame(raw: pd.DataFrame) -> pd.DataFrame:
     if raw.empty:
         return pd.DataFrame(columns=list(REQUIRED_COLUMNS))
 
+    df = raw.copy()
     rename_map = {
         "日期": "date",
         "交易日期": "date",
@@ -166,7 +177,7 @@ def normalize_history_frame(raw: pd.DataFrame) -> pd.DataFrame:
         "涨跌幅": "pct_change",
         "涨跌幅(%)": "pct_change",
     }
-    df = raw.rename(columns=rename_map).copy()
+    df = df.rename(columns=rename_map)
     missing = [column for column in CORE_PRICE_COLUMNS if column not in df.columns]
     if missing:
         raise ValueError(f"行情字段缺失: {', '.join(missing)}")
@@ -177,15 +188,13 @@ def normalize_history_frame(raw: pd.DataFrame) -> pd.DataFrame:
 
     if "volume" in df.columns:
         df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
-    elif "amount" in df.columns:
-        df["volume"] = pd.to_numeric(df["amount"], errors="coerce")
     else:
-        df["volume"] = 0
+        df["volume"] = pd.NA
 
     if "amount" in df.columns:
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
     else:
-        df["amount"] = df["volume"] * df["close"] * 100
+        df["amount"] = pd.NA
 
     computed_pct_change = df["close"].pct_change() * 100
     if "pct_change" in df.columns:
@@ -193,10 +202,32 @@ def normalize_history_frame(raw: pd.DataFrame) -> pd.DataFrame:
     else:
         df["pct_change"] = computed_pct_change
 
-    df["volume"] = df["volume"].fillna(0)
-    df["amount"] = df["amount"].fillna(0)
     df = df[list(REQUIRED_COLUMNS)]
     return df.dropna(subset=["date", "open", "close", "high", "low"]).sort_values("date")
+
+
+def _history_cache_path(code: str) -> Path:
+    return CACHE_DIR / f"{code}.csv"
+
+
+def _save_history_cache(code: str, data: pd.DataFrame) -> None:
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        data.to_csv(_history_cache_path(code), index=False, encoding="utf-8-sig")
+    except Exception:
+        logger.exception("保存历史行情缓存失败: %s", code)
+
+
+def _load_history_cache(code: str, days: int) -> pd.DataFrame:
+    try:
+        path = _history_cache_path(code)
+        if not path.exists():
+            return pd.DataFrame(columns=list(REQUIRED_COLUMNS))
+        data = pd.read_csv(path)
+        return normalize_history_frame(data).tail(days).reset_index(drop=True)
+    except Exception:
+        logger.exception("读取历史行情缓存失败: %s", code)
+        return pd.DataFrame(columns=list(REQUIRED_COLUMNS))
 
 
 def _short_error(exc: Exception) -> str:
