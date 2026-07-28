@@ -30,6 +30,8 @@ REQUIRED_COLUMNS = {
     "pct_change": "pct_change",
 }
 
+CORE_PRICE_COLUMNS = ["date", "open", "close", "high", "low"]
+
 COMMON_STOCK_NAMES = {
     "000001": "平安银行",
     "002384": "东山精密",
@@ -122,35 +124,55 @@ def normalize_history_frame(raw: pd.DataFrame) -> pd.DataFrame:
     if raw.empty:
         return pd.DataFrame(columns=list(REQUIRED_COLUMNS))
 
-    if {"date", "open", "close", "high", "low", "amount"}.issubset(raw.columns) and "volume" not in raw.columns:
-        df = raw.copy()
-        for column in ["open", "close", "high", "low", "amount"]:
-            df[column] = pd.to_numeric(df[column], errors="coerce")
-        df["volume"] = df["amount"]
-        df["amount"] = df["volume"] * df["close"] * 100
-        df["pct_change"] = df["close"].pct_change() * 100
-        df["date"] = pd.to_datetime(df["date"])
-        return df[list(REQUIRED_COLUMNS)].dropna(subset=["date", "open", "close", "high", "low"]).sort_values("date")
-
     rename_map = {
         "日期": "date",
+        "交易日期": "date",
         "开盘": "open",
+        "开盘价": "open",
         "收盘": "close",
+        "收盘价": "close",
+        "最新价": "close",
         "最高": "high",
+        "最高价": "high",
         "最低": "low",
+        "最低价": "low",
         "成交量": "volume",
+        "成交量(手)": "volume",
         "成交额": "amount",
+        "成交额(元)": "amount",
         "涨跌幅": "pct_change",
+        "涨跌幅(%)": "pct_change",
     }
     df = raw.rename(columns=rename_map).copy()
-    missing = [column for column in REQUIRED_COLUMNS if column not in df.columns]
+    missing = [column for column in CORE_PRICE_COLUMNS if column not in df.columns]
     if missing:
         raise ValueError(f"行情字段缺失: {', '.join(missing)}")
 
-    df = df[list(REQUIRED_COLUMNS)]
     df["date"] = pd.to_datetime(df["date"])
-    for column in ["open", "close", "high", "low", "volume", "amount", "pct_change"]:
+    for column in ["open", "close", "high", "low"]:
         df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    if "volume" in df.columns:
+        df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+    elif "amount" in df.columns:
+        df["volume"] = pd.to_numeric(df["amount"], errors="coerce")
+    else:
+        df["volume"] = 0
+
+    if "amount" in df.columns:
+        df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+    else:
+        df["amount"] = df["volume"] * df["close"] * 100
+
+    if "pct_change" in df.columns:
+        df["pct_change"] = pd.to_numeric(df["pct_change"], errors="coerce")
+    else:
+        df["pct_change"] = df["close"].pct_change() * 100
+
+    df["volume"] = df["volume"].fillna(0)
+    df["amount"] = df["amount"].fillna(0)
+    df["pct_change"] = df["pct_change"].fillna(0)
+    df = df[list(REQUIRED_COLUMNS)]
     return df.dropna(subset=["date", "open", "close", "high", "low"]).sort_values("date")
 
 
