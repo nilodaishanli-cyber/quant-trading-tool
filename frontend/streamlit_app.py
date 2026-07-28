@@ -34,6 +34,7 @@ from models.indicators import add_indicators
 from utils.formatting import dataframe_to_csv_bytes, parse_stock_codes
 
 APP_VERSION = "pct-change-fix-20260728-v3"
+STALE_ANALYSIS_STATE_KEYS = ("analysis_result", "analysis_errors", "failed_results")
 
 try:
     from models.holding_strategy import build_holding_atr_risk
@@ -177,6 +178,7 @@ def main() -> None:
         return
 
     if run_button:
+        clear_analysis_state()
         st.query_params["run"] = "1"
         st.query_params["codes"] = ",".join(input_codes or holding_codes)
 
@@ -193,6 +195,7 @@ def main() -> None:
     with st.spinner("正在加载历史模型与实时行情..."):
         result = build_realtime_result(codes, refresh_bucket)
     decisions, histories, errors, market = result.decisions, result.histories, result.errors, result.market
+    render_diagnostics(market, errors)
 
     if errors:
         st.warning("部分股票数据获取失败。免费行情接口偶尔会断开，系统已自动尝试备用源。")
@@ -516,12 +519,26 @@ def render_stock_detail(
 
 
 def build_realtime_result(codes: list[str], refresh_bucket: int):
+    diagnostic = {
+        "APP_VERSION": APP_VERSION,
+        "本次页面执行时间": now_cn().strftime("%Y-%m-%d %H:%M:%S"),
+        "历史股票池缓存状态": "成功结果可缓存，失败结果不缓存",
+    }
     historical_market = cached_historical_market_context(cache_version=APP_VERSION)
     realtime_market = realtime_market_with_fallback(refresh_bucket)
     realtime_indexes = realtime_market.get("indexes")
     market = realtime_market if isinstance(realtime_indexes, pd.DataFrame) and not realtime_indexes.empty else historical_market
     market_score = float(historical_market["score"])
-    base = cached_historical_stock_pool(tuple(codes), market_score, cache_version=APP_VERSION)
+    try:
+        base = cached_historical_stock_pool(tuple(codes), market_score, cache_version=APP_VERSION)
+        diagnostic["历史股票池结果来源"] = "st.cache_data 成功结果"
+        if isinstance(base.market, dict):
+            diagnostic["历史股票池缓存生成时间"] = base.market.get("缓存生成时间", "未知")
+            diagnostic["历史股票池缓存版本"] = base.market.get("缓存版本", "未知")
+    except HistoricalStockPoolFetchError as exc:
+        base = analyze_historical_stock_pool(list(codes), market_score)
+        diagnostic["历史股票池结果来源"] = "实时重新执行，失败结果未写入缓存"
+        diagnostic["历史股票池缓存异常"] = str(exc)
     quotes, quote_error = realtime_quotes_with_fallback(tuple(codes), refresh_bucket)
     minutes_by_code = {
         code: cached_intraday_minutes(code, refresh_bucket, cache_version=APP_VERSION)
@@ -536,6 +553,11 @@ def build_realtime_result(codes: list[str], refresh_bucket: int):
         quote_error=quote_error,
     )
     result.errors[:0] = base.errors
+    result.market = dict(result.market)
+    result.market["诊断信息"] = diagnostic | {
+        "本次错误数量": len(result.errors),
+        "本次错误对象": result.errors,
+    }
     return result
 
 
@@ -549,8 +571,13 @@ def cached_historical_market_context(cache_version: str) -> dict[str, object]:
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def cached_historical_stock_pool(codes: tuple[str, ...], market_score: float, cache_version: str):
-    del cache_version
-    return analyze_historical_stock_pool(list(codes), market_score)
+    result = analyze_historical_stock_pool(list(codes), market_score)
+    if result.errors:
+        raise HistoricalStockPoolFetchError(result.errors, cache_version)
+    result.market = dict(result.market)
+    result.market["缓存生成时间"] = now_cn().strftime("%Y-%m-%d %H:%M:%S")
+    result.market["缓存版本"] = cache_version
+    return result
 
 
 @st.cache_data(ttl=10, show_spinner=False)
@@ -605,6 +632,32 @@ def setup_auto_refresh(seconds: int) -> None:
         st.caption("自动刷新组件未安装，部署环境安装 requirements.txt 后会启用轻量刷新。")
         return
     st_autorefresh(interval=int(seconds) * 1000, key="trading_auto_refresh")
+
+
+class HistoricalStockPoolFetchError(RuntimeError):
+    def __init__(self, errors: list[dict[str, str]], cache_version: str):
+        self.errors = errors
+        self.cache_version = cache_version
+        super().__init__(f"历史股票池分析失败，未缓存失败结果；version={cache_version}; errors={errors}")
+
+
+def clear_analysis_state() -> None:
+    for key in STALE_ANALYSIS_STATE_KEYS:
+        st.session_state.pop(key, None)
+
+
+def render_diagnostics(market: dict[str, object], errors: list[dict[str, str]]) -> None:
+    diagnostic = market.get("诊断信息", {}) if isinstance(market, dict) else {}
+    if not isinstance(diagnostic, dict):
+        diagnostic = {}
+    diagnostic_rows = {
+        "当前APP_VERSION": APP_VERSION,
+        "页面显示时间": now_cn().strftime("%Y-%m-%d %H:%M:%S"),
+        "错误数量": len(errors),
+        **diagnostic,
+    }
+    with st.expander("临时诊断信息", expanded=bool(errors)):
+        st.json(diagnostic_rows, expanded=False)
 
 
 def unique_codes(codes: list[str]) -> list[str]:
