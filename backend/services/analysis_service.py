@@ -45,7 +45,10 @@ def analyze_single_stock(code: str, market_score: float) -> tuple[dict[str, Any]
     names = fetch_stock_names([code])
     result = fetch_stock_history(code, days=260)
     if result.error:
-        return {}, pd.DataFrame(), {"股票代码": code, "错误原因": result.error}
+        error = {"股票代码": code, "错误原因": result.error}
+        if result.tracebacks:
+            error["完整Traceback"] = "\n\n".join(result.tracebacks)
+        return {}, pd.DataFrame(), error
     history = add_indicators(result.data)
     decision = build_decision(code, names.get(code, "名称待获取"), history, market_score, result.source)
     return decision, history, None

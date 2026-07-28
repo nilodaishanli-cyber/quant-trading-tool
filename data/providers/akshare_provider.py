@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 import logging
 import time
+import traceback
 from typing import Literal
 
 import pandas as pd
@@ -19,6 +20,7 @@ class StockFetchResult:
     data: pd.DataFrame
     error: str | None = None
     source: str | None = None
+    tracebacks: list[str] | None = None
 
 
 REQUIRED_COLUMNS = {
@@ -48,6 +50,7 @@ def fetch_stock_history(code: str, days: int = 30, provider: ProviderName = "aks
         return StockFetchResult(code=code, data=pd.DataFrame(), error=f"暂不支持的数据源: {provider}")
 
     errors: list[str] = []
+    traces: list[str] = []
     try:
         raw = _fetch_with_retry(lambda: _fetch_akshare_history_tx(code, days=days), retries=2)
         _log_raw_history("Tencent", code, raw)
@@ -56,6 +59,8 @@ def fetch_stock_history(code: str, days: int = 30, provider: ProviderName = "aks
             raise ValueError("腾讯接口未返回行情数据")
         return StockFetchResult(code=code, data=data, source="akshare/tencent")
     except Exception as exc:  # noqa: BLE001 - surface provider errors to the UI.
+        traceback.print_exc()
+        traces.append("腾讯接口 traceback:\n" + traceback.format_exc())
         errors.append(f"腾讯接口失败: {_short_error(exc)}")
 
     try:
@@ -66,8 +71,10 @@ def fetch_stock_history(code: str, days: int = 30, provider: ProviderName = "aks
             raise ValueError("东方财富接口未返回行情数据")
         return StockFetchResult(code=code, data=data, source="akshare/eastmoney")
     except Exception as exc:  # noqa: BLE001 - surface provider errors to the UI.
+        traceback.print_exc()
+        traces.append("东方财富备用接口 traceback:\n" + traceback.format_exc())
         errors.append(f"东方财富备用接口失败: {_short_error(exc)}")
-        return StockFetchResult(code=code, data=pd.DataFrame(), error="；".join(errors))
+        return StockFetchResult(code=code, data=pd.DataFrame(), error="；".join(errors), tracebacks=traces)
 
 
 def _fetch_akshare_history_em(code: str, days: int) -> pd.DataFrame:
