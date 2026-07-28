@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+import logging
 import time
 from typing import Literal
 
 import pandas as pd
 
 
+logger = logging.getLogger(__name__)
 ProviderName = Literal["akshare"]
 
 
@@ -48,6 +50,7 @@ def fetch_stock_history(code: str, days: int = 30, provider: ProviderName = "aks
     errors: list[str] = []
     try:
         raw = _fetch_with_retry(lambda: _fetch_akshare_history_em(code, days=days), retries=2)
+        _log_raw_history("Eastmoney", code, raw)
         data = normalize_history_frame(raw).tail(days).reset_index(drop=True)
         if data.empty:
             raise ValueError("东方财富接口未返回行情数据")
@@ -57,6 +60,7 @@ def fetch_stock_history(code: str, days: int = 30, provider: ProviderName = "aks
 
     try:
         raw = _fetch_with_retry(lambda: _fetch_akshare_history_tx(code, days=days), retries=2)
+        _log_raw_history("Tencent", code, raw)
         data = normalize_history_frame(raw).tail(days).reset_index(drop=True)
         if data.empty:
             raise ValueError("腾讯接口未返回行情数据")
@@ -120,6 +124,25 @@ def fetch_stock_names(codes: list[str]) -> dict[str, str]:
     return {code: COMMON_STOCK_NAMES.get(code, "名称待获取") for code in codes}
 
 
+def _log_raw_history(source: str, stock_code: str, df: pd.DataFrame) -> None:
+    if df.empty:
+        logger.info("%s raw columns for %s: []", source, stock_code)
+        logger.info("%s last rows for %s: []", source, stock_code)
+        return
+    logger.info(
+        "%s raw columns for %s: %s",
+        source,
+        stock_code,
+        list(df.columns),
+    )
+    logger.info(
+        "%s last rows for %s: %s",
+        source,
+        stock_code,
+        df.tail(2).to_dict("records"),
+    )
+
+
 def normalize_history_frame(raw: pd.DataFrame) -> pd.DataFrame:
     if raw.empty:
         return pd.DataFrame(columns=list(REQUIRED_COLUMNS))
@@ -164,14 +187,14 @@ def normalize_history_frame(raw: pd.DataFrame) -> pd.DataFrame:
     else:
         df["amount"] = df["volume"] * df["close"] * 100
 
+    computed_pct_change = df["close"].pct_change() * 100
     if "pct_change" in df.columns:
-        df["pct_change"] = pd.to_numeric(df["pct_change"], errors="coerce")
+        df["pct_change"] = pd.to_numeric(df["pct_change"], errors="coerce").combine_first(computed_pct_change)
     else:
-        df["pct_change"] = df["close"].pct_change() * 100
+        df["pct_change"] = computed_pct_change
 
     df["volume"] = df["volume"].fillna(0)
     df["amount"] = df["amount"].fillna(0)
-    df["pct_change"] = df["pct_change"].fillna(0)
     df = df[list(REQUIRED_COLUMNS)]
     return df.dropna(subset=["date", "open", "close", "high", "low"]).sort_values("date")
 

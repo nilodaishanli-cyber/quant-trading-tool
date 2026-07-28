@@ -47,7 +47,7 @@ def build_decision(
         "股票代码": code,
         "数据源": _source_name(data_source),
         "当前价格": round(float(latest["close"]), 2),
-        "今日涨跌": f"{float(latest['pct_change']):.2f}%",
+        "今日涨跌": _format_pct(latest.get("pct_change")),
         "综合评分": comprehensive,
         "市场环境评分": round(float(market_score), 1),
         "技术评分": technical_score,
@@ -134,7 +134,7 @@ def _capital_score(data: pd.DataFrame) -> float:
     latest = data.iloc[-1]
     volume_avg = float(latest["volume_avg_20"] or 0)
     volume_ratio = float(latest["volume"] / volume_avg) if volume_avg else 1
-    pct_change = float(latest["pct_change"] or 0)
+    pct_change = _safe_float(latest.get("pct_change"), 0.0)
     score = 50 + min(max(volume_ratio - 1, -1), 2) * 18 + max(min(pct_change, 5), -5) * 3
     return round(float(np.clip(score, 0, 100)), 1)
 
@@ -197,6 +197,24 @@ def _pct_to_float(value: str) -> float:
         return float(value.replace("%", ""))
     except ValueError:
         return 50.0
+
+
+def _safe_float(value: object, fallback: float = 0.0) -> float:
+    try:
+        if pd.isna(value):
+            return fallback
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _format_pct(value: object) -> str:
+    try:
+        if pd.isna(value):
+            return "--"
+        return f"{float(value):.2f}%"
+    except (TypeError, ValueError):
+        return "--"
 
 
 def _quote_float(quote: dict[str, object], key: str, fallback: float) -> float:

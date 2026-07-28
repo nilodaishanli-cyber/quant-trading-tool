@@ -33,6 +33,8 @@ from models.holding_strategy import build_holding_analysis
 from models.indicators import add_indicators
 from utils.formatting import dataframe_to_csv_bytes, parse_stock_codes
 
+APP_VERSION = "pct-change-fix-20260728-v3"
+
 try:
     from models.holding_strategy import build_holding_atr_risk
 except ImportError:
@@ -139,6 +141,7 @@ DETAIL_COLUMNS = {
 
 def main() -> None:
     st.title("实时盘中量化交易分析系统")
+    st.caption(f"当前版本：{APP_VERSION}")
     st.caption("集合竞价 -> 开盘 -> 实时分时 -> 黄线突破概率 -> 10:50多空判断 -> 买入区域 -> 风险控制。")
 
     with st.sidebar:
@@ -513,15 +516,15 @@ def render_stock_detail(
 
 
 def build_realtime_result(codes: list[str], refresh_bucket: int):
-    historical_market = cached_historical_market_context(cache_version="hist-v1")
+    historical_market = cached_historical_market_context(cache_version=APP_VERSION)
     realtime_market = realtime_market_with_fallback(refresh_bucket)
     realtime_indexes = realtime_market.get("indexes")
     market = realtime_market if isinstance(realtime_indexes, pd.DataFrame) and not realtime_indexes.empty else historical_market
     market_score = float(historical_market["score"])
-    base = cached_historical_stock_pool(tuple(codes), market_score, cache_version="hist-v1")
+    base = cached_historical_stock_pool(tuple(codes), market_score, cache_version=APP_VERSION)
     quotes, quote_error = realtime_quotes_with_fallback(tuple(codes), refresh_bucket)
     minutes_by_code = {
-        code: cached_intraday_minutes(code, refresh_bucket, cache_version="minute-v1")
+        code: cached_intraday_minutes(code, refresh_bucket, cache_version=APP_VERSION)
         for code in codes
     }
     result = merge_realtime_analysis(
@@ -585,7 +588,7 @@ def realtime_market_with_fallback(refresh_bucket: int) -> dict[str, object]:
 
 
 def realtime_quotes_with_fallback(codes: tuple[str, ...], refresh_bucket: int) -> tuple[pd.DataFrame, str | None]:
-    result = cached_realtime_quotes(codes, refresh_bucket, cache_version="rt-quotes-v1")
+    result = cached_realtime_quotes(codes, refresh_bucket, cache_version=APP_VERSION)
     if result.error is None and not result.data.empty:
         st.session_state["last_realtime_quotes"] = result.data
         st.session_state["last_realtime_quote_time"] = now_cn().strftime("%Y-%m-%d %H:%M:%S")
